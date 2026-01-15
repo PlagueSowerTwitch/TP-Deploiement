@@ -191,6 +191,13 @@ jobs:
           set -e
           echo "🚀 Starting deployment..."
 
+          # Ensure user has docker permissions
+          if ! groups $USER | grep -q docker; then
+            echo "📋 Adding user to docker group..."
+            sudo usermod -aG docker $USER
+            newgrp docker
+          fi
+
           # Login to Docker Hub
           echo "🔐 Authenticating to Docker Hub..."
           echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
