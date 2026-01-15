@@ -185,8 +185,8 @@ jobs:
           chmod 600 ~/.ssh/azure_vm_key
           ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
           
-          # Define deployment script
-          DEPLOY_SCRIPT=$(cat <<'DEPLOY_EOF'
+          # Define deployment script with variable substitution
+          DEPLOY_SCRIPT=$(cat <<DEPLOY_EOF
             #!/bin/bash
             set -e
             
@@ -235,7 +235,7 @@ jobs:
           )
           
           # Execute deployment on remote VM
-          echo "$DEPLOY_SCRIPT" | ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" "bash -s"
+          ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" "bash -s" <<< "$DEPLOY_SCRIPT"
       
       - name: Verify deployment health
         env:
