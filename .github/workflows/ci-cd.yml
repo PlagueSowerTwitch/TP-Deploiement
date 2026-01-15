@@ -173,116 +173,115 @@ jobs:
 
       - name: Deploy to Azure VM via SSH
         env:
-            VM_HOST: ${{ secrets.AZURE_VM_HOST }}
-            VM_USERNAME: ${{ secrets.AZURE_VM_USERNAME }}
-            SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
-            DOCKER_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
-            DOCKER_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
+          SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USERNAME: ${{ secrets.AZURE_VM_USERNAME }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
         run: |
-            # 1. Vérification des variables (debug)
-            echo "VM_HOST: $VM_HOST"
-            echo "VM_USERNAME: $VM_USERNAME"
-            echo "SSH_PRIVATE_KEY length: ${#SSH_PRIVATE_KEY}"
-
-            # 2. Configuration SSH
-            mkdir -p ~/.ssh
-            echo "$SSH_PRIVATE_KEY" > ~/.ssh/azure_vm_key
-            chmod 600 ~/.ssh/azure_vm_key
-            ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-            # 3. Test de connexion SSH (pour debug)
-            ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" "echo 'SSH connection OK'"
-
-            # 4. Déploiement
-            ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" <<'DEPLOY_EOF'
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/azure_vm_key
+          chmod 600 ~/.ssh/azure_vm_key
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Execute deployment on remote VM
+          cat <<DEPLOY_EOF | ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" "bash -s"
             #!/bin/bash
             set -e
+            
             echo "🚀 Starting deployment..."
-
+            
             # Login to Docker Hub
+            echo "🔐 Authenticating to Docker Hub..."
             echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
-
+            
             # Pull latest image
+            echo "📥 Pulling latest Docker image..."
             docker pull "$DOCKER_USERNAME/flask-app:latest"
-
+            
             # Stop existing container (if running)
+            echo "⏹️  Stopping existing container (if any)..."
             docker stop flask-app-prod || true
             docker rm flask-app-prod || true
-
-            # Start new container
+            
+            # Start new container (idempotent)
+            echo "🐳 Starting new Flask application container..."
             docker run -d \
-            --name flask-app-prod \
-            -p 8080:8080 \
-            -e PORT=8080 \
-            -e ENVIRONMENT=production \
-            --restart unless-stopped \
-            "$DOCKER_USERNAME/flask-app:latest"
-
+              --name flask-app-prod \
+              -p 8080:8080 \
+              -e PORT=8080 \
+              -e ENVIRONMENT=production \
+              --restart unless-stopped \
+              "$DOCKER_USERNAME/flask-app:latest"
+            
             # Wait for container to be ready
+            echo "⏳ Waiting for application to be ready..."
             for i in {1..30}; do
-            if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+              if curl -s http://localhost:8080/health > /dev/null 2>&1; then
                 echo "✅ Application is responding on /health"
+                HEALTH=$(curl -s http://localhost:8080/health)
+                echo "Health response: $HEALTH"
                 exit 0
-            fi
-            echo "Waiting... attempt $i/30"
-            sleep 1
+              fi
+              echo "Waiting... attempt $i/30"
+              sleep 1
             done
-
+            
             echo "❌ Application failed to respond after 30 seconds"
             docker logs flask-app-prod
             exit 1
-            DEPLOY_EOF
-
+          DEPLOY_EOF
+      
+      - name: Verify deployment health
+        env:
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USERNAME: ${{ secrets.AZURE_VM_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/azure_vm_key
+          chmod 600 ~/.ssh/azure_vm_key
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Verify application responds to multiple endpoints
+          echo "🔍 Verifying application endpoints..."
+          
+          ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" << 'VERIFY_EOF'
+            echo "Testing /health endpoint..."
+            HEALTH_RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/health)
+            HTTP_CODE=$(echo "$HEALTH_RESPONSE" | tail -n1)
+            BODY=$(echo "$HEALTH_RESPONSE" | head -n-1)
             
-            - name: Verify deployment health
-                env:
-                VM_HOST: ${{ secrets.AZURE_VM_HOST }}
-                VM_USERNAME: ${{ secrets.AZURE_VM_USERNAME }}
-                SSH_PRIVATE_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
-                run: |
-                mkdir -p ~/.ssh
-                echo "$SSH_PRIVATE_KEY" > ~/.ssh/azure_vm_key
-                chmod 600 ~/.ssh/azure_vm_key
-                ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-                
-                # Verify application responds to multiple endpoints
-                echo "🔍 Verifying application endpoints..."
-                
-                ssh -i ~/.ssh/azure_vm_key "$VM_USERNAME@$VM_HOST" << 'VERIFY_EOF'
-                    echo "Testing /health endpoint..."
-                    HEALTH_RESPONSE=$(curl -s -w "\n%{http_code}" http://localhost:8080/health)
-                    HTTP_CODE=$(echo "$HEALTH_RESPONSE" | tail -n1)
-                    BODY=$(echo "$HEALTH_RESPONSE" | head -n-1)
-                    
-                    if [ "$HTTP_CODE" = "200" ]; then
-                    echo "✅ /health: HTTP $HTTP_CODE"
-                    echo "Response: $BODY"
-                    else
-                    echo "❌ /health: HTTP $HTTP_CODE"
-                    exit 1
-                    fi
-                    
-                    echo "Testing / endpoint..."
-                    ROOT_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
-                    if [ "$ROOT_CODE" = "200" ]; then
-                    echo "✅ /: HTTP $ROOT_CODE"
-                    else
-                    echo "❌ /: HTTP $ROOT_CODE"
-                    exit 1
-                    fi
-                    
-                    echo "Testing /api/info endpoint..."
-                    INFO_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/info)
-                    if [ "$INFO_CODE" = "200" ]; then
-                    echo "✅ /api/info: HTTP $INFO_CODE"
-                    else
-                    echo "❌ /api/info: HTTP $INFO_CODE"
-                    exit 1
-                    fi
-                    
-                    echo ""
-                    echo "✅ All endpoints responding correctly!"
-                VERIFY_EOF
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ /health: HTTP $HTTP_CODE"
+              echo "Response: $BODY"
+            else
+              echo "❌ /health: HTTP $HTTP_CODE"
+              exit 1
+            fi
+            
+            echo "Testing / endpoint..."
+            ROOT_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/)
+            if [ "$ROOT_CODE" = "200" ]; then
+              echo "✅ /: HTTP $ROOT_CODE"
+            else
+              echo "❌ /: HTTP $ROOT_CODE"
+              exit 1
+            fi
+            
+            echo "Testing /api/info endpoint..."
+            INFO_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/info)
+            if [ "$INFO_CODE" = "200" ]; then
+              echo "✅ /api/info: HTTP $INFO_CODE"
+            else
+              echo "❌ /api/info: HTTP $INFO_CODE"
+              exit 1
+            fi
+            
+            echo ""
+            echo "✅ All endpoints responding correctly!"
+          VERIFY_EOF
       
       - name: Deployment summary
         if: success()
