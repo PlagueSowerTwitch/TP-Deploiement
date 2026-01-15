@@ -7,7 +7,7 @@ app = Flask(__name__)
 def home():
     """Page d'accueil"""
     return jsonify({
-        "message": "Bienvenue sur la page d'accueil de l'application Flask",
+        "message": "Bienvenue sur l'application Flask",
         "version": "1.0"
     })
 
